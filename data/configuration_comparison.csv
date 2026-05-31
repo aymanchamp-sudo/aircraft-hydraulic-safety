@@ -1,0 +1,3 @@
+config_id,n_iterations,config_score_mean,config_score_min,min_line_sf_mean,min_line_sf_5th,max_vm_mean_mpa,max_vm_99th_mpa,p_failure,beam_sf_mean,beam_sf_min,load_95th_kN
+STANDARD_CONFIG,2000,90.33,90.33,5.588,5.069,93.25,110.92,0.001,5.309,0.972,55.7
+DANGEROUS_CONFIG,2000,0.0,0.0,5.313,4.277,98.82,139.99,0.001,5.309,0.972,55.7
