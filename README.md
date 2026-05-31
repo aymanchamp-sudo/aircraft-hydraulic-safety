@@ -1,8 +1,5 @@
 # AI-Assisted Aircraft Hydraulic Safety Optimization System
 
-> B.Tech Computer Science and Business Systems — Mini Project  
-> K.J. Somaiya School of Engineering, Somaiya Vidyavihar University
-
 A complete AI-assisted engineering simulation system for optimizing
 hydraulic line placement in aircraft fin structures. Combines classical
 aerospace engineering physics with modern AI techniques including
