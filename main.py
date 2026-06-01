@@ -635,6 +635,30 @@ if __name__ == "__main__":
             run_phase3()
             run_phase4()
             run_phase5()
+            try:
+                run_phase6()
+            except Exception as e:
+                import traceback
+                print("PHASE 6 FAILED:")
+                traceback.print_exc()
+            try:
+                run_phase7()
+            except Exception as e:
+                import traceback
+                print("PHASE 7 FAILED:")
+                traceback.print_exc()
+            try:
+                run_phase8()
+            except Exception as e:
+                import traceback
+                print("PHASE 8 FAILED:")
+                traceback.print_exc()
+            try:
+                run_phase9()
+            except Exception as e:
+                import traceback
+                print("PHASE 9 FAILED:")
+                traceback.print_exc()
         else:
             print(f"Unknown phase '{phase}'. Use: python main.py 2/3/4/5/6/7/8/9/all")
     else:
