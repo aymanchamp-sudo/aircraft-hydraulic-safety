@@ -1,4 +1,8 @@
 # AI-Assisted Aircraft Hydraulic Safety Optimization System
+## Live Demo
+🚀 **[Try the live dashboard](https://aircraft-hydraulic-safety-ayman.streamlit.app/)**
+
+
 
 A complete AI-assisted engineering simulation system for optimizing
 hydraulic line placement in aircraft fin structures. Combines classical
@@ -35,6 +39,21 @@ Simulation      Optimization              (Real-time Dashboard)
 | Dashboard | Live Streamlit app with real-time physics simulation |
 
 ---
+
+
+## Screenshots
+
+### Streamlit Dashboard
+![Dashboard](reports/phase2_structural_dashboard.png)
+
+### Monte Carlo Results
+![Monte Carlo](reports/phase5_safety_distribution.png)
+
+### Genetic Algorithm Convergence
+![GA Convergence](reports/phase8_ga_convergence.png)
+
+### ML Feature Importance
+![ML Results](reports/phase9_feature_importance.png)
 
 ## System Architecture
 core/
@@ -141,6 +160,15 @@ Fitness = config_score - SF_penalty - overlap_penalty
 - **Digital Twin**: Connect dashboard to live flight data recorder
 
 ---
+
+
+## References
+
+1. Bruhn, E.F. - Analysis and Design of Flight Vehicle Structures
+2. Shigley, J.E. - Mechanical Engineering Design, 10th Ed.
+3. FAA FAR Part 25 - Airworthiness Standards: Transport Category Airplanes
+4. Anderson, J.D. - Fundamentals of Aerodynamics, 6th Ed.
+5. Basquin, O.H. - The Exponential Law of Endurance Tests (1910)
 
 ## Author
 
