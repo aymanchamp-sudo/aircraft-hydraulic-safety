@@ -104,14 +104,6 @@ python main.py 9    # Machine learning training
 python main.py all  # Run all phases in sequence
 ```
 
-### Launch dashboard
-```bash
-streamlit run dashboard/app.py
-```
-Opens at http://localhost:8501
-
----
-
 ## Physics Models
 
 ### Structural (Euler-Bernoulli Beam Theory)
