@@ -273,7 +273,8 @@ class HydraulicLine:
         x_end: float,
         y_position: float,
         operating_pressure: float,
-        system_name: str = "Unknown"
+        system_name: str = "Unknown",
+        stress_model: str = "lame"
     ):
         """
         Parameters:
@@ -297,7 +298,17 @@ class HydraulicLine:
             Military: ~34.5 MPa (5000 PSI)
         system_name : str
             Which hydraulic system (A, B, or C for redundancy tracking)
+        stress_model : str
+            "lame" (default) = exact thick-wall cylinder stresses at the inner
+            surface, with radial stress = -P.
+            "thin_wall" = the original approximation (sigma = P*r/t, radial = 0),
+            only valid when wall/inner-radius < 0.1.
+            Our standard tube (12 mm OD, 1 mm wall) has wall/radius = 0.2, so
+            the thin-wall formula under-predicts hoop stress by about 11%.
         """
+        if stress_model not in ("lame", "thin_wall"):
+            raise ValueError("stress_model must be 'lame' or 'thin_wall'")
+        self.stress_model = stress_model
         self.id = line_id
         self.geometry = geometry
         self.material = material
@@ -322,39 +333,49 @@ class HydraulicLine:
     
     def compute_hoop_stress(self):
         """
-        Hoop (circumferential) stress from internal pressure.
-        
-        σ_hoop = P × r_inner / t_wall   (thin-wall formula)
-        
-        This is the dominant pressure stress for burst failure.
-        The tube wall is being stretched circumferentially by the pressure
-        trying to expand the tube diameter.
-        
+        Hoop (circumferential) stress at the inner wall from internal pressure.
+
+        Lame (default, exact for a thick-walled cylinder):
+            sigma_hoop = P * (ro^2 + ri^2) / (ro^2 - ri^2)
+        Thin-wall approximation (stress_model="thin_wall"):
+            sigma_hoop = P * ri / t
+
         Returns:
         --------
-        float : hoop stress (Pa) — always positive (tensile)
+        float : hoop stress (Pa), always positive (tensile)
         """
         P = self.pressure
-        r = self.geometry.inner_radius
-        t = self.geometry.wall_thickness
-        
-        return P * r / t
-    
+        ri = self.geometry.inner_radius
+        if self.stress_model == "thin_wall":
+            return P * ri / self.geometry.wall_thickness
+        ro = self.geometry.outer_radius
+        return P * (ro**2 + ri**2) / (ro**2 - ri**2)
+
     def compute_axial_pressure_stress(self):
         """
-        Axial stress from end-cap pressure reaction.
-        
-        σ_axial_pressure = P × r_inner / (2 × t_wall) = σ_hoop / 2
-        
-        The pressurized fluid also pushes on the end fittings,
-        which pull the tube walls in tension along the length.
-        
+        Axial stress from the pressure acting on the closed tube ends.
+
+        Lame (closed ends): sigma_axial = P * ri^2 / (ro^2 - ri^2)
+        Thin-wall:          sigma_axial = P * ri / (2 * t)
+
         Returns:
         --------
-        float : axial pressure stress (Pa) — tensile
+        float : axial pressure stress (Pa), tensile
         """
-        return self.compute_hoop_stress() / 2
-    
+        P = self.pressure
+        ri = self.geometry.inner_radius
+        if self.stress_model == "thin_wall":
+            return P * ri / (2 * self.geometry.wall_thickness)
+        ro = self.geometry.outer_radius
+        return P * ri**2 / (ro**2 - ri**2)
+
+    def compute_radial_stress(self):
+        """
+        Radial stress at the inner wall: -P (compressive) in the Lame model,
+        0 in the thin-wall approximation.
+        """
+        return 0.0 if self.stress_model == "thin_wall" else -self.pressure
+
     def compute_bending_stress(self, beam, use_x_center=True):
         """
         Bending stress experienced by the line from fin structural bending.
@@ -387,43 +408,30 @@ class HydraulicLine:
     
     def compute_von_mises_stress(self, beam):
         """
-        Combined Von Mises stress — the key failure criterion.
-        
-        Von Mises theory: yielding occurs when the distortion energy
-        reaches the yield point in simple tension.
-        
-        For combined axial bending + hoop stress:
-        
-        σ_1 = σ_bending + σ_axial_pressure  (axial direction)
-        σ_2 = σ_hoop                          (circumferential direction)
-        σ_3 = 0                               (radial — thin wall approx)
-        
-        Von Mises:
-        σ_VM = √(σ_1² + σ_2² - σ_1×σ_2)
-        
-        (Simplified form for biaxial stress state, σ_3 = 0)
-        
+        Von Mises equivalent stress at the inner wall, full 3-D form:
+
+            s_t = hoop stress
+            s_z = bending stress + axial pressure stress  (along the tube)
+            s_r = radial stress (-P in the Lame model, 0 in thin-wall)
+
+            sigma_VM = sqrt(0.5 * ((s_t-s_z)^2 + (s_z-s_r)^2 + (s_r-s_t)^2))
+
+        With s_r = 0 this reduces to the old biaxial form
+        sqrt(s_z^2 + s_t^2 - s_z*s_t).
+
         Parameters:
         -----------
         beam : Beam with loads applied
-        
+
         Returns:
         --------
-        float : Von Mises equivalent stress (Pa)
+        float : Von Mises stress (Pa)
         """
-        sigma_bending = self.compute_bending_stress(beam)
-        sigma_hoop = self.compute_hoop_stress()
-        sigma_axial_p = self.compute_axial_pressure_stress()
-        
-        # Total axial stress = bending + pressure axial component
-        sigma_1 = sigma_bending + sigma_axial_p
-        sigma_2 = sigma_hoop
-        
-        # Von Mises criterion (biaxial)
-        sigma_vm = np.sqrt(sigma_1**2 + sigma_2**2 - sigma_1 * sigma_2)
-        
-        return sigma_vm
-    
+        s_t = self.compute_hoop_stress()
+        s_z = self.compute_bending_stress(beam) + self.compute_axial_pressure_stress()
+        s_r = self.compute_radial_stress()
+        return float(np.sqrt(0.5 * ((s_t - s_z)**2 + (s_z - s_r)**2 + (s_r - s_t)**2)))
+
     def compute_safety_factor(self, beam):
         """
         Compute safety factor based on Von Mises stress.

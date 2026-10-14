@@ -162,14 +162,15 @@ def build_beam(modules, beam_length, cross_section_height, material_name):
     return beam, material
 
 
-def build_hydraulic_config(modules, beam, y_positions, pressure):
+def build_hydraulic_config(modules, beam, y_positions, pressure, wall_mm=1.0):
     """Build hydraulic configuration from slider values."""
     HydraulicLine         = modules['HydraulicLine']
     HydraulicLineGeometry = modules['HydraulicLineGeometry']
     TITANIUM_TUBE         = modules['TITANIUM_TUBE']
     HydraulicConfiguration = modules['HydraulicConfiguration']
 
-    geom = HydraulicLineGeometry(outer_diameter=0.012, wall_thickness=0.001)
+    geom = HydraulicLineGeometry(outer_diameter=0.012,
+                                  wall_thickness=wall_mm / 1000)
     lines = []
     systems = ['System_A', 'System_B', 'System_C']
     for i, y_pos in enumerate(y_positions):
@@ -513,6 +514,11 @@ def main():
     )
     pressure = 20.7e6 if '3000' in pressure_psi else 34.5e6
 
+    wall_mm = st.sidebar.slider(
+        "Tube Wall Thickness (mm)", 0.5, 2.0, 1.0, 0.1, key="wall_mm",
+        help="12 mm outer diameter tube. Thinner wall = higher pressure stress"
+    )
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📊 About")
     st.sidebar.info(
@@ -529,7 +535,7 @@ def main():
     beam.apply_distributed_load(dist_load)
 
     hyd_config = build_hydraulic_config(
-        modules, beam, [y1, y2, y3], pressure
+        modules, beam, [y1, y2, y3], pressure, wall_mm
     )
     analysis = hyd_config.analyze(beam)
 
