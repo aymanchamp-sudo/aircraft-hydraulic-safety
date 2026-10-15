@@ -242,6 +242,11 @@ STAINLESS_STEEL_TUBE = HydraulicLineMaterial(
 )
 
 
+# Weights of the composite safety score the GA maximises (must sum to 1).
+# Module-level so the ablation study can change them.
+SCORE_WEIGHTS = {'sf': 0.50, 'fatigue': 0.30, 'position': 0.20}
+
+
 class HydraulicLine:
     """
     Complete model of a hydraulic line inside an aircraft fin.
@@ -662,7 +667,9 @@ class HydraulicLine:
         position_score = (1 - position_fraction) * 100
         
         # Weighted combination
-        composite = 0.50 * sf_score + 0.30 * fatigue_score + 0.20 * position_score
+        w = SCORE_WEIGHTS
+        composite = (w['sf'] * sf_score + w['fatigue'] * fatigue_score
+                     + w['position'] * position_score)
         
         return round(composite, 2)
     

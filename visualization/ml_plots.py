@@ -27,7 +27,9 @@ def plot_model_comparison(results: dict, y_test):
     ax3 = fig.add_subplot(gs[1, 0])
     ax4 = fig.add_subplot(gs[1, 1])
 
-    colors = {'Random Forest': 'steelblue', 'XGBoost': 'darkorange'}
+    colors = {'Random Forest': 'steelblue', 'XGBoost': 'darkorange',
+              'Ensemble (calibrated)': 'purple',
+              'Physics rule (load / height^2)': 'black'}
 
     # ── Panel 1: ROC Curves ────────────────────────────────────────────
     ax1.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random (AUC=0.50)')
@@ -65,7 +67,7 @@ def plot_model_comparison(results: dict, y_test):
     ax2.grid(True, alpha=0.3)
 
     # ── Panel 3: Confusion matrices ────────────────────────────────────
-    for idx, (name, result) in enumerate(results.items()):
+    for idx, (name, result) in enumerate(list(results.items())[:2]):
         cm = result['cm']
         ax = ax3 if idx == 0 else ax4
 
@@ -206,5 +208,24 @@ def plot_failure_probability_landscape(predictor, df):
         ax.set_title(f'{name}\nFailure Probability Landscape')
         ax.legend(fontsize=8)
 
+    plt.tight_layout()
+    return fig
+
+def plot_calibration(predictor):
+    """
+    Reliability diagram for the calibrated ensemble probability (test set).
+    Points on the diagonal mean "when the model says 20 %, about 20 % fail".
+    """
+    cal = predictor.calibration
+    fig, ax = plt.subplots(figsize=(6.5, 6))
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Perfect calibration')
+    ax.plot(cal['prob_pred'], cal['prob_true'], 'o-', color='purple',
+            linewidth=2, label=f"Ensemble (Brier {cal['brier']:.4f})")
+    ax.set_xlabel('Predicted failure probability')
+    ax.set_ylabel('Observed failure fraction (test set)')
+    ax.set_title('Calibration of the ensemble probability\n'
+                 '(10 quantile bins; stress-test data distribution)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     return fig

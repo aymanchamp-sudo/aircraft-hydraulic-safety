@@ -28,18 +28,17 @@ Simulation      Optimization              (Real-time Dashboard)
 
 ## Key Results
 
-| Phase | Achievement |
-|-------|-------------|
-| Structural | 4m fin, Al 2024-T3, 50kN load → SF=1.54, tip deflection=159mm |
-| Hydraulic | Standard config score=90.3/100, dangerous config=0.0/100 |
-| Monte Carlo | 2000 flights simulated, P(failure)=0.001 for standard config |
-| Data Science | Load-SF Pearson r=-0.9829, failures above 96.2 kN threshold |
-| Genetic Algorithm | Improved config from 90.3 → 94.1/100 (+4.1 points) in 0.7s |
-| Machine Learning | Random Forest AUC=1.0, XGBoost AUC=1.0 on 4000-sample dataset |
-| Dashboard | Live Streamlit app with real-time physics simulation |
+All numbers below come from re-running the code (`python main.py all`, seeds fixed).
 
----
-
+| Phase | Result |
+|-------|--------|
+| Structural | 4 m fin, Al 2024-T3, 50 kN tip + 3 kN/m distributed load: max stress 224 MPa, SF = 1.54, tip deflection 159 mm |
+| Hydraulic | Tube stresses use Lamé thick-wall equations and full 3-D Von Mises. Standard layout score 90.3/100; dangerous layout 0.0 (tubes overlap) |
+| Monte Carlo | 2,000 flights, P(failure) = 0.001 for the standard layout; severe turbulence is the only scenario that fails (2.7% of those flights) |
+| Data science | Peak load vs lowest tube SF: Pearson r = -0.85; failures begin above 96.2 kN |
+| Genetic algorithm | Score 90.3 -> 94.1/100. Ablation over 10 seeds: removing the position term drops the mean minimum tube SF from 4.24 to 3.80 (`python -m optimization.ablation`) |
+| Machine learning | Leak-free, group-split model on 20,000 simulated flights. Test AUC 0.9997 (RF) / 0.9998 (XGBoost), but a one-line physics rule (load / spar height^2) scores as well or better. ML is a surrogate, not a discovery |
+| Dashboard | Streamlit app with presets, a verdict banner, tube SF vs position chart, and an ML tab that uses the real inputs |
 
 ## Screenshots
 
@@ -70,7 +69,9 @@ optimization/
 └── genetic_optimizer.py Population=50, Generations=80, Tournament selection
 ml/
 ├── dataset_builder.py   Feature engineering, correlation analysis
-└── train_model.py       Random Forest + XGBoost, class imbalance handling
+├── features.py          Single source of truth for model features + leakage guard
+├── generate_dataset.py  Independent, seeded simulated flights
+└── train_model.py       RF + XGBoost + logistic regression + baselines, calibration
 visualization/
 ├── stress_plots.py      Engineering dashboard plots
 ├── beam_animation.py    60-frame GIF animations
@@ -86,7 +87,7 @@ dashboard/
 
 ### Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/aircraft-hydraulic-safety
+git clone https://github.com/aymanchamp-sudo/aircraft-hydraulic-safety
 cd aircraft-hydraulic-safety
 pip install -r requirements.txt
 ```
@@ -100,7 +101,10 @@ python main.py 5    # Monte Carlo (takes ~45 seconds)
 python main.py 6    # Data science analysis
 python main.py 7    # Animations + interactive plots (~90 seconds)
 python main.py 8    # Genetic algorithm optimization
-python main.py 9    # Machine learning training
+python main.py 10   # Generate the ML dataset (20,000 flights)
+python main.py 9    # Train and evaluate the ML models
+python -m optimization.ablation  # GA position-weight ablation
+python -m pytest    # Test suite
 python main.py all  # Run all phases in sequence
 ```
 
@@ -113,9 +117,11 @@ python main.py all  # Run all phases in sequence
 SF = σ_yield/σ    Safety factor
 
 ### Hydraulic Line Safety
-σ_hoop = Pr/t           Hoop stress from internal pressure
-σ_VM = √(σ₁²-σ₁σ₂+σ₂²) Von Mises combined stress
-N_f = (σ_ref/σ_VM)^b × N_ref   Basquin fatigue life
+σ_hoop = P(ro²+ri²)/(ro²-ri²)   Lamé hoop stress (thin-wall Pr/t is selectable)
+σ_axial = P·ri²/(ro²-ri²) + bending   Closed-end axial stress plus beam bending
+σ_r = -P                       Radial stress at the bore
+σ_VM = √½[(σt-σz)²+(σz-σr)²+(σr-σt)²]   3-D Von Mises
+N_f = 0.5·(σ_a/σ_f')^(1/b)   Basquin fatigue life (infinite life below 0.45 × ultimate strength)
 
 ### Aerodynamic Model
 L = ½ρV²·S·CL_α·α      Fin lift force
@@ -123,9 +129,19 @@ L = ½ρV²·S·CL_α·α      Fin lift force
 σ_w = σ_w0·exp(-Δt/τ) + ε  Gauss-Markov turbulence
 
 ### Genetic Algorithm
-Fitness = config_score - SF_penalty - overlap_penalty
-- separation_penalty - redundancy_penalty
-- surface_penalty
+Line score = 0.50·SF score + 0.30·fatigue score + 0.20·position score
+Fitness    = config_score - SF/overlap/separation/redundancy/surface penalties
+
+---
+
+## Limitations
+
+- The fin spar is a **solid rectangular** Euler-Bernoulli beam, not a real wing-box or FEM model.
+- Flight-scenario probabilities are **assumed**, not taken from flight data.
+- The load is split 80% tip / 20% distributed by assumption.
+- Fatigue is a simplified Basquin model with a single stress amplitude, not rainflow/Miner.
+- All ML data is **simulated**. The label is deterministic given load, spar height and material, so the models approximate a closed-form rule; they are valid only for Al 2024-T3, a 4 m span, spar height 0.16-0.26 m, wall 0.7-1.3 mm and 20.7/34.5 MPa.
+- In this model **tubes never yield before the spar does**, so tube placement affects margins and fatigue but not the failure label.
 
 ---
 
@@ -133,7 +149,7 @@ Fitness = config_score - SF_penalty - overlap_penalty
 
 | Category | Technology |
 |----------|-----------|
-| Language | Python 3.12 |
+| Language | Python 3.10+ |
 | Physics | NumPy, SciPy |
 | Data | Pandas |
 | ML | scikit-learn, XGBoost |
