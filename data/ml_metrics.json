@@ -1,0 +1,153 @@
+{
+  "test_set": {
+    "Random Forest": {
+      "auc_roc": 0.9997,
+      "avg_precision": 0.995,
+      "precision": 0.9859,
+      "recall": 0.9333,
+      "f1": 0.9589,
+      "threshold": 0.6185
+    },
+    "XGBoost": {
+      "auc_roc": 0.9998,
+      "avg_precision": 0.9971,
+      "precision": 0.9449,
+      "recall": 0.9911,
+      "f1": 0.9675,
+      "threshold": 0.5652
+    },
+    "Logistic regression": {
+      "auc_roc": 1.0,
+      "avg_precision": 0.9999,
+      "precision": 0.9868,
+      "recall": 0.9956,
+      "f1": 0.9912,
+      "threshold": 0.848
+    },
+    "Ensemble (calibrated)": {
+      "auc_roc": 0.9997,
+      "avg_precision": 0.992,
+      "precision": 0.9692,
+      "recall": 0.9778,
+      "f1": 0.9735,
+      "threshold": 0.5
+    },
+    "Load threshold": {
+      "auc_roc": 0.9524,
+      "avg_precision": 0.487,
+      "precision": 0.3928,
+      "recall": 0.7244,
+      "f1": 0.5094,
+      "threshold": 79.0589
+    },
+    "Physics rule (load / height^2)": {
+      "auc_roc": 1.0,
+      "avg_precision": 1.0,
+      "precision": 1.0,
+      "recall": 0.9956,
+      "f1": 0.9978,
+      "threshold": 2398.413
+    }
+  },
+  "confusion_matrices": {
+    "Random Forest": [
+      [
+        3772,
+        3
+      ],
+      [
+        15,
+        210
+      ]
+    ],
+    "XGBoost": [
+      [
+        3762,
+        13
+      ],
+      [
+        2,
+        223
+      ]
+    ],
+    "Logistic regression": [
+      [
+        3772,
+        3
+      ],
+      [
+        1,
+        224
+      ]
+    ],
+    "Ensemble (calibrated)": [
+      [
+        3768,
+        7
+      ],
+      [
+        5,
+        220
+      ]
+    ],
+    "Load threshold": [
+      [
+        3523,
+        252
+      ],
+      [
+        62,
+        163
+      ]
+    ],
+    "Physics rule (load / height^2)": [
+      [
+        3775,
+        0
+      ],
+      [
+        1,
+        224
+      ]
+    ]
+  },
+  "grouped_cv_mean_std": {
+    "Random Forest": {
+      "auc": [
+        0.9997163260755821,
+        7.319707692798057e-05
+      ],
+      "ap": [
+        0.995681232481781,
+        0.000933502194476942
+      ]
+    },
+    "XGBoost": {
+      "auc": [
+        0.9998610218176781,
+        1.871225456838782e-05
+      ],
+      "ap": [
+        0.9977765036070612,
+        0.0003003970324343132
+      ]
+    }
+  },
+  "calibration": {
+    "prob_true": [
+      0.0,
+      0.9414225941422594
+    ],
+    "prob_pred": [
+      0.0,
+      0.9276756265799345
+    ],
+    "brier": 0.002205292986713906,
+    "brier_always_base_rate": 0.0530859375
+  },
+  "rows": 20000,
+  "failures": 1128,
+  "test_rows": 4000,
+  "test_failures": 225,
+  "summary": "ML is no better than the best non-ML baseline: XGBoost AP 0.997 (F1 0.967) vs Physics rule (load / height^2) AP 1.000 (F1 0.998)."
+}

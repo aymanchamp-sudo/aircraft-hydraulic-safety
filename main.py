@@ -10,7 +10,9 @@ os.makedirs("reports", exist_ok=True)
 os.makedirs("data", exist_ok=True)
 
 def open_image(path):
-    """Open a saved image in Windows default viewer."""
+    """Open a saved image in the default viewer (Windows only; skipped elsewhere)."""
+    if os.name != "nt":
+        return
     import subprocess
     subprocess.Popen(["start", path], shell=True)
 
@@ -531,92 +533,56 @@ def run_phase8():
 
 
 
+def run_phase10():
+    print("\n" + "="*60)
+    print("  PHASE 10 - ML DATASET (independent flights and designs)")
+    print("="*60)
+    from ml.generate_dataset import generate_dataset
+    generate_dataset(n_samples=20000, seed=2026, min_failures=300,
+                     out_path="data/ml_dataset.csv")
+    print("\n" + "="*60)
+    print("  PHASE 10 COMPLETE  ->  data/ml_dataset.csv")
+    print("="*60)
+
+
 def run_phase9():
     print("\n" + "="*60)
     print("  PHASE 9 - MACHINE LEARNING")
     print("="*60)
-
-    from ml.train_model import HydraulicFailurePredictor
+    from ml.train_model import run_training
     from visualization.ml_plots import (plot_model_comparison,
                                          plot_feature_importance,
-                                         plot_failure_probability_landscape)
+                                         plot_failure_probability_landscape,
+                                         plot_calibration)
+    if not os.path.exists("data/ml_dataset.csv"):
+        print("  data/ml_dataset.csv not found - generating it first (phase 10)...")
+        run_phase10()
+    predictor = run_training("data/ml_dataset.csv", "data")
 
-    print("\n  Step 1: Loading simulation data...")
-    predictor = HydraulicFailurePredictor("data/mc_standard_config.csv")
-    X, y = predictor.load_and_prepare()
-
-    print("\n  Step 2: Train/test split...")
-    X_train, X_test, y_train, y_test = predictor.split_data(X, y)
-
-    print("\n  Step 3: Training models...")
-    predictor.train_random_forest()
-    predictor.train_xgboost()
-
-    print("\n  Step 4: Evaluating models...")
-    rf_result  = predictor.evaluate_model(predictor.rf_model, "Random Forest")
-    xgb_result = predictor.evaluate_model(predictor.xgb_model, "XGBoost")
-
-    print("\n  Step 5: Model Comparison Summary")
-    print("  " + "-"*45)
-    print("  " + "Model".ljust(20) + "AUC-ROC".rjust(10) + "Avg Prec".rjust(10))
-    print("  " + "-"*45)
-    for name, res in [("Random Forest", rf_result), ("XGBoost", xgb_result)]:
-        print("  " + name.ljust(20) +
-              str(round(res["auc_roc"],4)).rjust(10) +
-              str(round(res["avg_precision"],4)).rjust(10))
-
-    winner = ("Random Forest"
-               if rf_result["auc_roc"] >= xgb_result["auc_roc"]
-               else "XGBoost")
-    print("\n  Best model: " + winner)
-
-    print("\n  Step 6: Sample failure risk prediction...")
-    sample = X_test.iloc[0].to_dict()
-    prediction = predictor.predict_failure_risk(sample)
-    print("    RF probability:      " + str(round(prediction["rf_probability"],4)))
-    print("    XGBoost probability: " + str(round(prediction["xgb_probability"],4)))
-    print("    Ensemble:            " + str(round(prediction["ensemble"],4)))
-    print("    Risk level:          " + prediction["risk_level"])
-
-    print("\n  Step 7: Saving trained models...")
-    predictor.save_models("data")
-
-    print("\n  Step 8: Generating ML visualization plots...")
-    plots_saved = []
-
-    fig1 = plot_model_comparison(
-        {"Random Forest": rf_result, "XGBoost": xgb_result}, y_test)
-    p1 = "reports/phase9_model_comparison.png"
-    fig1.savefig(p1, dpi=150, bbox_inches="tight")
-    plt.close("all")
-    plots_saved.append(p1)
-
-    fig2 = plot_feature_importance(predictor, top_n=15)
-    p2 = "reports/phase9_feature_importance.png"
-    fig2.savefig(p2, dpi=150, bbox_inches="tight")
-    plt.close("all")
-    plots_saved.append(p2)
-
-    fig3 = plot_failure_probability_landscape(predictor, predictor.df_raw)
-    p3 = "reports/phase9_probability_landscape.png"
-    fig3.savefig(p3, dpi=150, bbox_inches="tight")
-    plt.close("all")
-    plots_saved.append(p3)
-
-    for p in plots_saved:
-        print("  Saved: " + p)
-        open_image(p)
+    print("\n  Generating ML visualization plots...")
+    shown = {k: predictor.results[k] for k in
+             ("Random Forest", "XGBoost", "Ensemble (calibrated)",
+              "Physics rule (load / height^2)")}
+    figs = [
+        (plot_model_comparison(shown, predictor.y_test),
+         "reports/phase9_model_comparison.png"),
+        (plot_feature_importance(predictor, top_n=len(predictor.feature_names)),
+         "reports/phase9_feature_importance.png"),
+        (plot_failure_probability_landscape(predictor, predictor.df_raw),
+         "reports/phase9_probability_landscape.png"),
+        (plot_calibration(predictor), "reports/phase9_calibration.png"),
+    ]
+    for fig, path in figs:
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close("all")
+        print("  Saved: " + path)
+        open_image(path)
 
     print("\n" + "="*60)
     print("  PHASE 9 COMPLETE")
-    print("  Best model:   " + winner)
-    print("  AUC-ROC:      " + str(round(max(rf_result["auc_roc"],
-                                              xgb_result["auc_roc"]),4)))
-    print("  Models saved: data/rf_model.joblib")
-    print("                data/xgb_model.joblib")
+    print("  " + predictor.summary_text())
     print("="*60)
     return predictor
-
 
 
 if __name__ == "__main__":
@@ -630,6 +596,7 @@ if __name__ == "__main__":
         elif phase == "7":   run_phase7()
         elif phase == "8":   run_phase8()
         elif phase == "9":   run_phase9()
+        elif phase == "10":  run_phase10()
         elif phase == "all":
             run_phase2()
             run_phase3()
@@ -654,13 +621,14 @@ if __name__ == "__main__":
                 print("PHASE 8 FAILED:")
                 traceback.print_exc()
             try:
+                run_phase10()
                 run_phase9()
             except Exception as e:
                 import traceback
-                print("PHASE 9 FAILED:")
+                print("PHASE 9/10 FAILED:")
                 traceback.print_exc()
         else:
-            print(f"Unknown phase '{phase}'. Use: python main.py 2/3/4/5/6/7/8/9/all")
+            print(f"Unknown phase '{phase}'. Use: python main.py 2/3/4/5/6/7/8/9/10/all")
     else:
         run_phase5()
 

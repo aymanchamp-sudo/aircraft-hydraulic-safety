@@ -120,9 +120,10 @@ def load_physics_modules():
 @st.cache_data
 def load_monte_carlo_data():
     """Load Monte Carlo CSV results."""
+    # The dangerous-config CSV contains the SAME 2,000 flights, so using both
+    # files would double-count every flight. Load the standard run only.
     paths = [
         'data/mc_standard_config.csv',
-        'data/mc_dangerous_config.csv',
     ]
     dfs = []
     for path in paths:
@@ -134,16 +135,24 @@ def load_monte_carlo_data():
 
 
 @st.cache_resource
-def load_ml_models():
-    """Load trained ML models."""
+def load_risk_model():
+    """Load the trained failure-risk models (None if they are missing)."""
     try:
-        import joblib
-        rf  = joblib.load('data/rf_model.joblib')
-        xgb = joblib.load('data/xgb_model.joblib')
-        feats = joblib.load('data/feature_names.joblib')
-        return rf, xgb, feats
-    except Exception as e:
-        return None, None, None
+        from ml.train_model import FailureRiskModel
+        return FailureRiskModel('data')
+    except Exception:
+        return None
+
+
+@st.cache_data
+def load_ml_metrics():
+    """Held-out test metrics written by the training script."""
+    import json
+    try:
+        with open('data/ml_metrics.json') as fh:
+            return json.load(fh)
+    except Exception:
+        return None
 
 
 def build_beam(modules, beam_length, cross_section_height, material_name):
@@ -162,14 +171,15 @@ def build_beam(modules, beam_length, cross_section_height, material_name):
     return beam, material
 
 
-def build_hydraulic_config(modules, beam, y_positions, pressure):
+def build_hydraulic_config(modules, beam, y_positions, pressure, wall_mm=1.0):
     """Build hydraulic configuration from slider values."""
     HydraulicLine         = modules['HydraulicLine']
     HydraulicLineGeometry = modules['HydraulicLineGeometry']
     TITANIUM_TUBE         = modules['TITANIUM_TUBE']
     HydraulicConfiguration = modules['HydraulicConfiguration']
 
-    geom = HydraulicLineGeometry(outer_diameter=0.012, wall_thickness=0.001)
+    geom = HydraulicLineGeometry(outer_diameter=0.012,
+                                  wall_thickness=wall_mm / 1000)
     lines = []
     systems = ['System_A', 'System_B', 'System_C']
     for i, y_pos in enumerate(y_positions):
@@ -393,30 +403,95 @@ def get_safety_badge(sf):
         return '<span class="danger-badge">UNSAFE</span>'
 
 
-def predict_ml_risk(rf_model, xgb_model, feature_names,
-                     peak_load, turbulence, beam_sf,
-                     max_stress, min_sf, config_score):
-    """Make ML failure risk prediction."""
-    mean_vals = {f: 0.0 for f in feature_names}
-    mean_vals['peak_load_kN']          = peak_load
-    mean_vals['turbulence_intensity']  = turbulence
-    mean_vals['beam_safety_factor']    = beam_sf
-    mean_vals['max_beam_stress_mpa']   = max_stress
-    mean_vals['min_line_sf']           = min_sf
-    mean_vals['config_score']          = config_score
-    mean_vals['log_peak_load']         = np.log1p(peak_load)
-    mean_vals['load_squared']          = peak_load ** 2
-    mean_vals['load_x_turbulence']     = peak_load * turbulence
-    mean_vals['stress_utilization']    = max_stress / 345.0
-    mean_vals['sf_margin']             = beam_sf - 1.5
+PSI_OPTIONS = ['3000 PSI (Commercial)', '5000 PSI (Military)']
 
-    row = pd.DataFrame([mean_vals])[feature_names].fillna(0)
+# Every value is a widget key, so choosing a preset sets all the controls.
+PRESETS = {
+    "Default (standard layout)": dict(
+        tip_kn=50.0, dist_kn=3.0, turb=3.0, material='Aluminum 2024-T3',
+        span=4.0, spar_cm=20.0, y1_mm=0.0, y2_mm=50.0, y3_mm=-50.0,
+        psi=PSI_OPTIONS[0], wall_mm=1.0),
+    "Dangerous layout (tubes near the surface)": dict(
+        tip_kn=50.0, dist_kn=3.0, turb=3.0, material='Aluminum 2024-T3',
+        span=4.0, spar_cm=20.0, y1_mm=84.0, y2_mm=76.0, y3_mm=-80.0,
+        psi=PSI_OPTIONS[0], wall_mm=1.0),
+    "Stress test (96 kN, 5000 PSI, 0.7 mm wall)": dict(
+        tip_kn=96.0, dist_kn=3.0, turb=9.0, material='Aluminum 2024-T3',
+        span=4.0, spar_cm=20.0, y1_mm=0.0, y2_mm=80.0, y3_mm=-80.0,
+        psi=PSI_OPTIONS[1], wall_mm=0.7),
+}
 
-    rf_prob  = rf_model.predict_proba(row)[0, 1]
-    xgb_prob = xgb_model.predict_proba(row)[0, 1]
-    ensemble = (rf_prob + xgb_prob) / 2
 
-    return rf_prob, xgb_prob, ensemble
+def apply_preset():
+    """on_change callback: write the chosen preset into the widget keys."""
+    for key, value in PRESETS[st.session_state["preset"]].items():
+        st.session_state[key] = value
+
+
+def compute_verdict(beam_sf, min_line_sf, analysis):
+    """Return (label, colour, sentence). The first failing rule decides."""
+    if not analysis['no_overlap']:
+        return ("DO NOT FLY", "#dc3545",
+                "Hydraulic tubes physically overlap, so this layout cannot be built.")
+    if beam_sf < 1.0:
+        return ("DO NOT FLY", "#dc3545",
+                f"The fin spar exceeds its yield strength (safety factor {beam_sf:.2f}).")
+    if min_line_sf < 1.0:
+        return ("DO NOT FLY", "#dc3545",
+                f"The weakest tube exceeds its yield strength (safety factor {min_line_sf:.2f}).")
+    if beam_sf < 1.5:
+        return ("REVIEW", "#ffc107",
+                f"Fin spar safety factor {beam_sf:.2f} is below the 1.5 aerospace minimum.")
+    if min_line_sf < 1.5:
+        return ("REVIEW", "#ffc107",
+                f"Weakest tube safety factor {min_line_sf:.2f} is below the 1.5 minimum.")
+    if not analysis['separation_ok']:
+        return ("REVIEW", "#ffc107", "Two tubes are closer than the 20 mm separation limit.")
+    if not analysis['redundancy_ok']:
+        return ("REVIEW", "#ffc107",
+                "Redundant hydraulic systems are closer than the 30 mm spacing target.")
+    return ("SAFE", "#28a745",
+            f"Thinnest margin: fin spar SF {beam_sf:.2f}; weakest tube SF {min_line_sf:.2f}.")
+
+
+def plot_sf_vs_position(modules, beam, pressure, wall_mm, analysis):
+    """Tube safety factor as a function of where the tube sits in the spar."""
+    HydraulicLine         = modules['HydraulicLine']
+    HydraulicLineGeometry = modules['HydraulicLineGeometry']
+    TITANIUM_TUBE         = modules['TITANIUM_TUBE']
+    geom = HydraulicLineGeometry(outer_diameter=0.012,
+                                 wall_thickness=wall_mm / 1000)
+    h = beam.cs.h
+    ys = np.linspace(-h / 2, h / 2, 81)
+    sfs = [HydraulicLine('probe', geom, TITANIUM_TUBE, 0.2, beam.L * 0.9,
+                         float(y), pressure, 'probe').compute_safety_factor(beam)
+           for y in ys]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#1e2030')
+    ax.plot(ys * 1000, sfs, color='#4ecdc4', linewidth=2.5,
+            label='Tube safety factor at this position')
+    ax.axhline(1.5, color='red', linewidth=1.8, linestyle='--', label='Minimum SF = 1.5')
+    ax.axhline(3.0, color='#00cc55', linewidth=1.5, linestyle='-.', label='Excellent SF = 3.0')
+    for r, c in zip(analysis['line_results'], ['#4ecdc4', '#ffc107', '#a78bfa']):
+        ax.scatter([r['y_position'] * 1000], [r['sf_overall']], s=110, color=c,
+                   edgecolor='white', zorder=5)
+        ax.annotate(f"{r['system_name'].replace('System_', 'Sys ')}  SF {r['sf_overall']:.2f}",
+                    (r['y_position'] * 1000, r['sf_overall']),
+                    textcoords='offset points', xytext=(0, 12), ha='center',
+                    color='white', fontsize=8, fontweight='bold')
+    ax.set_xlabel('Tube y-position from neutral axis (mm)', color='white')
+    ax.set_ylabel('Tube safety factor', color='white')
+    ax.set_title('Does placement matter at this load, pressure and wall thickness?',
+                 color='white')
+    ax.tick_params(colors='white')
+    ax.set_ylim(0, max(max(sfs), 3.4) * 1.15)
+    ax.legend(fontsize=8, facecolor='#1e2030', labelcolor='white')
+    for spine in ax.spines.values():
+        spine.set_color('#444')
+    plt.tight_layout()
+    return fig
 
 
 # ── MAIN DASHBOARD ─────────────────────────────────────────────────────────
@@ -438,27 +513,31 @@ def main():
     with st.spinner('Loading physics engine...'):
         modules = load_physics_modules()
         df_mc   = load_monte_carlo_data()
-        rf_model, xgb_model, feature_names = load_ml_models()
+        risk_model = load_risk_model()
 
     # ── SIDEBAR ────────────────────────────────────────────────────────
     st.sidebar.markdown("## ⚙️ Simulation Controls")
+    st.sidebar.selectbox(
+        "Load preset", list(PRESETS), key="preset", on_change=apply_preset,
+        help="Sets every control below. You can still change them afterwards."
+    )
     st.sidebar.markdown("---")
 
     # Flight conditions
     st.sidebar.markdown("### ✈️ Flight Conditions")
     tip_load = st.sidebar.slider(
-        "Tip Load (kN)", 5.0, 150.0, 50.0, 1.0,
+        "Tip Load (kN)", 5.0, 150.0, 50.0, 1.0, key="tip_kn",
         help="Lateral aerodynamic force on fin tip"
     ) * 1000  # Convert to N
 
     dist_load = st.sidebar.slider(
-        "Distributed Load (kN/m)", 0.0, 10.0, 3.0, 0.5,
+        "Distributed Load (kN/m)", 0.0, 10.0, 3.0, 0.5, key="dist_kn",
         help="Aerodynamic pressure distributed along fin"
     ) * 1000
 
     turbulence = st.sidebar.slider(
-        "Turbulence Intensity (m/s)", 0.5, 15.0, 3.0, 0.5,
-        help="RMS turbulence velocity — affects Monte Carlo loads"
+        "Turbulence Intensity (m/s)", 0.5, 15.0, 3.0, 0.5, key="turb",
+        help="RMS turbulence velocity (an input to the ML risk model)"
     )
 
     st.sidebar.markdown("---")
@@ -468,16 +547,16 @@ def main():
     material_name = st.sidebar.selectbox(
         "Material",
         ['Aluminum 2024-T3', 'Aluminum 7075-T6', 'Titanium Ti-6Al-4V'],
-        help="Fin spar material"
+        key="material", help="Fin spar material"
     )
 
     beam_length = st.sidebar.slider(
-        "Fin Span (m)", 2.0, 8.0, 4.0, 0.5,
+        "Fin Span (m)", 2.0, 8.0, 4.0, 0.5, key="span",
         help="Height of the vertical fin"
     )
 
     section_height = st.sidebar.slider(
-        "Spar Height (cm)", 10.0, 40.0, 20.0, 2.0,
+        "Spar Height (cm)", 10.0, 40.0, 20.0, 2.0, key="spar_cm",
         help="Cross-section height of the fin spar"
     ) / 100  # Convert to meters
 
@@ -486,39 +565,46 @@ def main():
     # Hydraulic configuration
     st.sidebar.markdown("### 🔧 Hydraulic Line Positions")
     st.sidebar.caption(
-        "0 = Neutral axis (safest) | ±100 = Surface (dangerous)"
+        "0 = Neutral axis (safest) | ±(half spar height) = Surface (dangerous)"
     )
 
     h_half_mm = section_height / 2 * 1000
+    for k in ("y1_mm", "y2_mm", "y3_mm"):      # keep values inside the new range
+        if k in st.session_state:
+            st.session_state[k] = float(min(max(st.session_state[k], -h_half_mm), h_half_mm))
     y1 = st.sidebar.slider(
-        "Line 1 y-position (mm)", -h_half_mm, h_half_mm, 0.0, 1.0,
-        help="System A — primary flight controls"
+        "Line 1 y-position (mm)", -h_half_mm, h_half_mm, 0.0, 1.0, key="y1_mm",
+        help="System A: primary flight controls"
     ) / 1000
 
     y2 = st.sidebar.slider(
         "Line 2 y-position (mm)", -h_half_mm, h_half_mm,
-        float(h_half_mm * 0.5), 1.0,
-        help="System B — secondary controls"
+        float(h_half_mm * 0.5), 1.0, key="y2_mm",
+        help="System B: secondary controls"
     ) / 1000
 
     y3 = st.sidebar.slider(
         "Line 3 y-position (mm)", -h_half_mm, h_half_mm,
-        float(-h_half_mm * 0.5), 1.0,
-        help="System C — tertiary systems"
+        float(-h_half_mm * 0.5), 1.0, key="y3_mm",
+        help="System C: tertiary systems"
     ) / 1000
 
     pressure_psi = st.sidebar.selectbox(
-        "Hydraulic Pressure",
-        ['3000 PSI (Commercial)', '5000 PSI (Military)'],
+        "Hydraulic Pressure", PSI_OPTIONS, key="psi",
     )
     pressure = 20.7e6 if '3000' in pressure_psi else 34.5e6
+
+    wall_mm = st.sidebar.slider(
+        "Tube Wall Thickness (mm)", 0.5, 2.0, 1.0, 0.1, key="wall_mm",
+        help="12 mm outer diameter tube. Thinner wall = higher pressure stress"
+    )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📊 About")
     st.sidebar.info(
         "This dashboard simulates aircraft hydraulic line safety "
         "using beam theory, Monte Carlo analysis, genetic algorithm "
-        "optimization, and machine learning prediction."
+        "optimization, and a machine-learning surrogate model."
     )
 
     # ── RUN SIMULATION ─────────────────────────────────────────────────
@@ -529,7 +615,7 @@ def main():
     beam.apply_distributed_load(dist_load)
 
     hyd_config = build_hydraulic_config(
-        modules, beam, [y1, y2, y3], pressure
+        modules, beam, [y1, y2, y3], pressure, wall_mm
     )
     analysis = hyd_config.analyze(beam)
 
@@ -586,6 +672,14 @@ def main():
             <div style="font-size:11px;">mm ({tip_defl/beam_length/10:.2f}% span)</div>
         </div>""", unsafe_allow_html=True)
 
+    verdict, vcolor, vtext = compute_verdict(beam_sf, min_line_sf, analysis)
+    st.markdown(f"""
+    <div style="margin-top:12px; padding:12px 18px; border-radius:10px;
+                border-left:6px solid {vcolor}; background:#161b2e;">
+        <span style="color:{vcolor}; font-weight:800; font-size:18px;">{verdict}</span>
+        <span style="color:#cfd8e3; margin-left:12px;">{vtext}</span>
+    </div>""", unsafe_allow_html=True)
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── TABS ───────────────────────────────────────────────────────────
@@ -604,7 +698,7 @@ def main():
 
         with col_l:
             fig_stress = plot_stress_distribution(beam)
-            st.pyplot(fig_stress, use_container_width=True)
+            st.pyplot(fig_stress, width="stretch")
             plt.close('all')
 
         with col_r:
@@ -633,8 +727,16 @@ def main():
         st.markdown("#### Hydraulic Line Safety Analysis")
 
         fig_hyd = plot_hydraulic_config(beam, hyd_config, analysis)
-        st.pyplot(fig_hyd, use_container_width=True)
+        st.pyplot(fig_hyd, width="stretch")
         plt.close('all')
+
+        fig_pos = plot_sf_vs_position(modules, beam, pressure, wall_mm, analysis)
+        st.pyplot(fig_pos, width="stretch")
+        plt.close('all')
+        st.caption(
+            "At light loads every position is safe. Try the **Stress test** preset "
+            "to see where placement starts to cut the margin."
+        )
 
         st.markdown("**Per-Line Safety Report**")
         line_data = []
@@ -653,7 +755,7 @@ def main():
             })
 
         df_lines = pd.DataFrame(line_data)
-        st.dataframe(df_lines, use_container_width=True, hide_index=True)
+        st.dataframe(df_lines, width="stretch", hide_index=True)
 
         col_checks = st.columns(3)
         with col_checks[0]:
@@ -673,7 +775,7 @@ def main():
 
         if df_mc is not None:
             fig_mc = plot_mc_summary(df_mc)
-            st.pyplot(fig_mc, use_container_width=True)
+            st.pyplot(fig_mc, width="stretch")
             plt.close('all')
 
             col_s1, col_s2, col_s3, col_s4 = st.columns(4)
@@ -691,7 +793,7 @@ def main():
                              'config_score', 'any_failure']
             st.dataframe(
                 df_mc[display_cols].head(20),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -702,82 +804,102 @@ def main():
 
     # ── Tab 4: ML Prediction ───────────────────────────────────────────
     with tab4:
-        st.markdown("#### Machine Learning Failure Risk Prediction")
+        st.markdown("#### Machine Learning Failure-Risk Surrogate")
+        st.info(
+            "Surrogate model trained on simulated data; for illustration. "
+            "Given the load, spar height and material, the physics is deterministic "
+            "(the spar either yields or it does not), so this model is a fast "
+            "approximation of that rule. Its probability reflects uncertainty near "
+            "the failure boundary, not a measured flight-failure rate."
+        )
 
-        if rf_model is not None:
-            rf_prob, xgb_prob, ensemble = predict_ml_risk(
-                rf_model, xgb_model, feature_names,
-                peak_load=tip_load/1000,
-                turbulence=turbulence,
-                beam_sf=beam_sf,
-                max_stress=max_stress/1e6,
-                min_sf=min_line_sf,
-                config_score=config_score,
+        if risk_model is None:
+            st.warning(
+                "ML models not found. Run `python main.py 10` then "
+                "`python main.py 9` to build the dataset and train them."
             )
+        else:
+            from ml.features import build_feature_row
+            peak_kn = tip_load / 1000 + dist_load / 1000 * beam_length
+            row = build_feature_row(
+                peak_load_kN=peak_kn, turbulence_intensity=turbulence,
+                spar_height_m=section_height, line_y_m=[y1, y2, y3],
+                pressure_mpa=pressure / 1e6, wall_thickness_mm=wall_mm,
+            )
+            pred = risk_model.predict(row)
+            issues = risk_model.out_of_range(row)
+            if material_name != risk_model.meta['material'] or \
+                    abs(beam_length - risk_model.meta['span_m']) > 1e-9:
+                issues.insert(0, f"material / span (trained only for "
+                                 f"{risk_model.meta['material']}, "
+                                 f"{risk_model.meta['span_m']:.0f} m span)")
+            if issues:
+                st.warning("Outside the range this model was trained on, so treat the "
+                           "result as unreliable: " + "; ".join(issues))
 
-            risk_level = ('CRITICAL' if ensemble > 0.5 else
-                           'HIGH'     if ensemble > 0.1 else
-                           'MODERATE' if ensemble > 0.01 else 'LOW')
-
+            ensemble = pred['ensemble']
+            level = pred['level']
             risk_color = {'CRITICAL': '#cc0000', 'HIGH': '#ff6600',
-                           'MODERATE': '#ffc107', 'LOW': '#00cc55'}
-
+                          'MODERATE': '#ffc107', 'LOW': '#00cc55'}
             st.markdown(f"""
             <div style='text-align:center; padding:20px;
                          background:linear-gradient(135deg,#1e2030,#2d3250);
-                         border-radius:15px; border: 2px solid {risk_color[risk_level]};'>
-                <h2 style='color:{risk_color[risk_level]};'>
-                    {risk_level} RISK
-                </h2>
-                <p style='color:#aaa;'>ML Ensemble Failure Probability</p>
-                <h1 style='color:white;'>{ensemble*100:.3f}%</h1>
+                         border-radius:15px; border: 2px solid {risk_color[level]};'>
+                <h2 style='color:{risk_color[level]};'>{level} RISK</h2>
+                <p style='color:#aaa;'>Calibrated probability that the spar or a tube exceeds yield (SF below 1)</p>
+                <h1 style='color:white;'>{ensemble*100:.2f}%</h1>
             </div>
             """, unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
-            col_ml1, col_ml2, col_ml3 = st.columns(3)
-            col_ml1.metric("Random Forest", f"{rf_prob*100:.4f}%")
-            col_ml2.metric("XGBoost",       f"{xgb_prob*100:.4f}%")
-            col_ml3.metric("Ensemble",       f"{ensemble*100:.4f}%")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Random Forest score", f"{pred['rf']*100:.2f}%")
+            c2.metric("XGBoost score", f"{pred['xgb']*100:.2f}%")
+            c3.metric("Calibrated ensemble", f"{ensemble*100:.2f}%")
+            st.caption(
+                f"Inputs sent to the model: total load {peak_kn:.1f} kN "
+                f"(tip + distributed x span), turbulence {turbulence:.1f} m/s, "
+                f"spar height {section_height*100:.0f} cm, tube positions, "
+                f"{pressure/1e6:.1f} MPa, {wall_mm:.1f} mm wall. "
+                "The two raw scores are not calibrated; the ensemble is."
+            )
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("**How to interpret this:**")
-            st.markdown("""
-            - **LOW** (< 1%): Configuration is safe for normal operations
-            - **MODERATE** (1-10%): Review recommended before flight
-            - **HIGH** (10-50%): Immediate engineering review required
-            - **CRITICAL** (> 50%): Do not fly — redesign required
+            st.markdown("**Risk levels:** LOW below 1%, MODERATE 1 to 10%, "
+                        "HIGH 10 to 50%, CRITICAL above 50%.")
 
-            The ML model was trained on Monte Carlo simulation data.
-            It learned which combinations of load, turbulence, and
-            configuration lead to structural or hydraulic failure.
-            """)
+            metrics = load_ml_metrics()
+            if metrics:
+                with st.expander("How good is this model? (held-out test set)"):
+                    rows = []
+                    for name, m in metrics['test_set'].items():
+                        rows.append({'Model': name, 'AUC': m['auc_roc'],
+                                     'Avg precision': m['avg_precision'],
+                                     'Precision': m['precision'],
+                                     'Recall': m['recall'], 'F1': m['f1']})
+                    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                    st.markdown(
+                        f"{metrics['summary']} Test set: {metrics['test_rows']:,} "
+                        f"simulated flights, {metrics['test_failures']} failures. "
+                        "In this data every failure was the fin spar yielding; no tube "
+                        "failed first, so tube position barely changes the prediction."
+                    )
 
-            # Feature importance mini-chart
-            st.markdown("**Top Predictors of Failure Risk:**")
-            importances = rf_model.feature_importances_
-            top_idx = np.argsort(importances)[-10:]
-            top_feats = [feature_names[i] for i in top_idx]
-            top_vals  = importances[top_idx]
-
+            st.markdown("**What the model relies on:**")
+            importances = risk_model.rf.feature_importances_
+            order = np.argsort(importances)
             fig_imp, ax = plt.subplots(figsize=(8, 4))
             fig_imp.patch.set_facecolor('#0e1117')
             ax.set_facecolor('#1e2030')
-            ax.barh(top_feats, top_vals, color='#4ecdc4', alpha=0.8)
+            ax.barh([risk_model.feature_names[i] for i in order],
+                    importances[order], color='#4ecdc4', alpha=0.8)
             ax.set_xlabel('Importance', color='white')
-            ax.set_title('RF Feature Importance', color='white')
+            ax.set_title('Random Forest feature importance', color='white')
             ax.tick_params(colors='white', labelsize=8)
             for spine in ax.spines.values():
                 spine.set_color('#444')
             plt.tight_layout()
-            st.pyplot(fig_imp, use_container_width=True)
+            st.pyplot(fig_imp, width="stretch")
             plt.close('all')
-
-        else:
-            st.warning(
-                "ML models not found. "
-                "Run `python main.py 9` first to train models."
-            )
 
     # Footer
     st.markdown("---")
